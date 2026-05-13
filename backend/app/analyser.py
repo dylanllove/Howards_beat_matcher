@@ -11,6 +11,11 @@ from fastapi import UploadFile
 from .waveform import generate_waveform_peaks
 
 
+DEFAULT_MIN_SUGGESTED_CUT_SPACING_SECONDS = 1.25
+MIN_SUGGESTED_CUT_SCORE = 0.9
+CANDIDATE_MERGE_WINDOW_SECONDS = 0.1
+
+
 @dataclass
 class AnalysisResult:
     duration_seconds: float
@@ -43,15 +48,30 @@ def _local_spacing(times: list[float], index: int) -> float:
     return float(np.median(neighbours))
 
 
-def _merge_transition_candidates(candidates: list[tuple[float, float]], duration: float) -> list[float]:
+def _merge_transition_candidates(candidates: list[tuple[float, float]], duration: float) -> list[tuple[float, float]]:
     candidates = sorted((t, score) for t, score in candidates if 0.15 < t < duration - 0.15)
     merged: list[tuple[float, float]] = []
     for time, score in candidates:
-        if not merged or time - merged[-1][0] > 0.08:
+        if not merged or time - merged[-1][0] > CANDIDATE_MERGE_WINDOW_SECONDS:
             merged.append((time, score))
-        elif score > merged[-1][1]:
-            merged[-1] = (time, score)
-    return [round(time, 3) for time, _ in merged]
+        else:
+            previous_time, previous_score = merged[-1]
+            combined_score = previous_score + score * 0.35
+            strongest_time = time if score > previous_score else previous_time
+            merged[-1] = (strongest_time, combined_score)
+    return merged
+
+
+def _filter_suggested_cuts(
+    candidates: list[tuple[float, float]],
+    min_spacing: float = DEFAULT_MIN_SUGGESTED_CUT_SPACING_SECONDS,
+) -> list[float]:
+    strong_candidates = [(time, score) for time, score in candidates if score >= MIN_SUGGESTED_CUT_SCORE]
+    selected: list[tuple[float, float]] = []
+    for time, score in sorted(strong_candidates, key=lambda item: item[1], reverse=True):
+        if all(abs(time - selected_time) >= min_spacing for selected_time, _ in selected):
+            selected.append((time, score))
+    return [round(time, 3) for time, _ in sorted(selected)]
 
 
 def analyse_audio_file(path: str | Path) -> AnalysisResult:
@@ -73,7 +93,7 @@ def analyse_audio_file(path: str | Path) -> AnalysisResult:
     candidates += [(float(t), 0.78) for t in broad_onsets]
     candidates += [(float(t), 0.64) for t in snares]
     candidates += [(float(t), 0.48) for t in hats]
-    suggested = _merge_transition_candidates(candidates, duration)
+    suggested = _filter_suggested_cuts(_merge_transition_candidates(candidates, duration))
 
     beat_spacing = [
         {"time": time, "spacing": round(_local_spacing(suggested, idx), 3)}
