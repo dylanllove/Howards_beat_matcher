@@ -1,0 +1,1 @@
+export default { content: ['./index.html', './src/**/*.{ts,tsx}'], theme: { extend: { colors: { howards: '#00a86b', premiere: { 950: '#101114', 900: '#17191d', 800: '#20232a', 700: '#2c3038', 600: '#3a3f49' } } } }, plugins: [] };
