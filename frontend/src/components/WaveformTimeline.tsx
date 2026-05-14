@@ -68,10 +68,11 @@ export default function WaveformTimeline(p: Props) {
     const localX = (worldX: number) => worldX - visibleStartX;
     const visibleStartTime = xToTime(visibleStartX);
     const visibleEndTime = xToTime(visibleEndX);
-    const center = TIMELINE_HEIGHT / 2;
     const clipTop = 18;
     const clipBottom = TIMELINE_HEIGHT - 18;
     const clipHeight = clipBottom - clipTop;
+    const baseline = clipBottom - 8;
+    const drawableHeight = baseline - clipTop - 8;
 
     const background = ctx.createLinearGradient(0, 0, 0, TIMELINE_HEIGHT);
     background.addColorStop(0, '#20242b');
@@ -105,66 +106,61 @@ export default function WaveformTimeline(p: Props) {
       ctx.stroke();
     }
 
-    ctx.strokeStyle = 'rgba(220, 252, 231, 0.28)';
+    ctx.strokeStyle = 'rgba(220, 252, 231, 0.14)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 3; i += 1) {
+      const y = baseline - (drawableHeight * i) / 4;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(visibleWidth, y);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(220, 252, 231, 0.3)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, center);
-    ctx.lineTo(visibleWidth, center);
+    ctx.moveTo(0, baseline + 0.5);
+    ctx.lineTo(visibleWidth, baseline + 0.5);
     ctx.stroke();
 
     if (p.peaks.length > 0 && p.duration > 0) {
-      const points: { x: number; amp: number }[] = [];
-      const stepPx = 3;
-      const smoothingWindow = Math.max(3, Math.round(14 / Math.max(p.zoom, 1)));
-      for (let x = 0; x <= visibleWidth + stepPx; x += stepPx) {
-        const worldX = visibleStartX + x;
-        const centreIndex = clamp(Math.round((worldX / width) * (p.peaks.length - 1)), 0, p.peaks.length - 1);
-        const radius = Math.max(1, Math.floor(smoothingWindow / 2));
+      const stepPx = p.zoom > 8 ? 2 : p.zoom > 3 ? 3 : 4;
+      const barWidth = Math.max(1, stepPx - 1);
+      const waveformFill = ctx.createLinearGradient(0, clipTop, 0, baseline);
+      waveformFill.addColorStop(0, 'rgba(189, 255, 222, 0.98)');
+      waveformFill.addColorStop(0.22, 'rgba(88, 255, 180, 0.98)');
+      waveformFill.addColorStop(1, 'rgba(0, 198, 123, 0.92)');
+      const peakCap = ctx.createLinearGradient(0, clipTop, 0, baseline);
+      peakCap.addColorStop(0, 'rgba(236, 255, 246, 0.95)');
+      peakCap.addColorStop(1, 'rgba(73, 255, 172, 0.75)');
+
+      for (let x = 0; x < visibleWidth; x += stepPx) {
+        const worldStart = visibleStartX + x;
+        const worldEnd = Math.min(visibleStartX + x + stepPx, width);
+        const startIndex = clamp(Math.floor((worldStart / width) * p.peaks.length), 0, p.peaks.length - 1);
+        const endIndex = clamp(Math.ceil((worldEnd / width) * p.peaks.length), startIndex + 1, p.peaks.length);
+        let peak = 0;
         let total = 0;
-        let weightTotal = 0;
-        for (let offset = -radius; offset <= radius; offset += 1) {
-          const index = clamp(centreIndex + offset, 0, p.peaks.length - 1);
-          const weight = radius + 1 - Math.abs(offset);
-          total += (p.peaks[index] || 0) * weight;
-          weightTotal += weight;
+        for (let index = startIndex; index < endIndex; index += 1) {
+          const value = p.peaks[index] || 0;
+          peak = Math.max(peak, value);
+          total += value;
         }
-        const peak = weightTotal > 0 ? total / weightTotal : 0;
-        const shaped = Math.min(1, Math.pow(peak, 0.72));
-        points.push({ x, amp: Math.max(1.5, shaped * clipHeight * 0.48) });
+        const average = total / Math.max(1, endIndex - startIndex);
+        const bodyHeight = Math.max(0, Math.pow(Math.min(1, average), 0.86) * drawableHeight);
+        const peakHeight = Math.max(peak > 0 ? 2 : 0, Math.pow(Math.min(1, peak), 0.78) * drawableHeight);
+        const barHeight = Math.max(bodyHeight, peakHeight);
+        if (barHeight <= 0) continue;
+
+        const y = baseline - barHeight;
+        const localBarWidth = Math.min(barWidth, Math.max(1, visibleWidth - x));
+        ctx.fillStyle = 'rgba(1, 61, 43, 0.55)';
+        ctx.fillRect(x, y, localBarWidth, barHeight);
+        ctx.fillStyle = waveformFill;
+        ctx.fillRect(x, y, localBarWidth, barHeight);
+        ctx.fillStyle = peakCap;
+        ctx.fillRect(x, y, localBarWidth, Math.min(2, barHeight));
       }
-
-      const drawEdge = (top: boolean) => {
-        ctx.beginPath();
-        points.forEach((point, index) => {
-          const y = center + (top ? -point.amp : point.amp);
-          if (index === 0) ctx.moveTo(point.x, y);
-          else ctx.lineTo(point.x, y);
-        });
-      };
-
-      ctx.beginPath();
-      points.forEach((point, index) => {
-        const y = center - point.amp;
-        if (index === 0) ctx.moveTo(point.x, y);
-        else ctx.lineTo(point.x, y);
-      });
-      for (let i = points.length - 1; i >= 0; i -= 1) ctx.lineTo(points[i].x, center + points[i].amp);
-      ctx.closePath();
-      const waveFill = ctx.createLinearGradient(0, clipTop, 0, clipBottom);
-      waveFill.addColorStop(0, 'rgba(111, 255, 198, 0.96)');
-      waveFill.addColorStop(0.5, 'rgba(24, 232, 143, 0.98)');
-      waveFill.addColorStop(1, 'rgba(0, 173, 105, 0.94)');
-      ctx.fillStyle = waveFill;
-      ctx.fill();
-
-      ctx.strokeStyle = 'rgba(194, 255, 225, 0.78)';
-      ctx.lineWidth = 1.35;
-      drawEdge(true);
-      ctx.stroke();
-      ctx.strokeStyle = 'rgba(9, 123, 80, 0.75)';
-      ctx.lineWidth = 1;
-      drawEdge(false);
-      ctx.stroke();
     }
   }, [p.peaks, p.duration, p.zoom, viewport, width]);
 
