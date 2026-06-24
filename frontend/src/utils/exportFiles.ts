@@ -1,4 +1,4 @@
-import type { TimingPlan } from '../types';
+import type { OverlayConfig, TimingPlan } from '../types';
 
 export function sanitizeFileName(name: string): string {
   return name.trim().replace(/[<>:"/\\|?*\x00-\x1F]/g, '-').replace(/\s+/g, ' ').replace(/\.+$/g, '').slice(0, 120) || 'Howards Beat Match';
@@ -9,7 +9,7 @@ type FileSystemFileHandle = { createWritable(): Promise<FileSystemWritableFileSt
 type FileSystemDirectoryHandle = { getDirectoryHandle(name: string, opts?: { create?: boolean }): Promise<FileSystemDirectoryHandle>; getFileHandle(name: string, opts?: { create?: boolean }): Promise<FileSystemFileHandle> };
 declare global { interface Window { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>; } }
 
-export async function exportProjectFolder(propertyName: string, mp3File: File, timingPlan: TimingPlan): Promise<void> {
+export async function exportProjectFolder(propertyName: string, mp3File: File, timingPlan: TimingPlan, overlayConfig: OverlayConfig): Promise<void> {
   const safe = sanitizeFileName(propertyName);
   if (!window.showDirectoryPicker) throw new Error('Folder export requires Chrome or Edge with the File System Access API.');
   const root = await window.showDirectoryPicker();
@@ -20,4 +20,7 @@ export async function exportProjectFolder(propertyName: string, mp3File: File, t
   const jsonHandle = await folder.getFileHandle(`${safe}.json`, { create: true });
   const jsonWriter = await jsonHandle.createWritable();
   await jsonWriter.write(new Blob([JSON.stringify(timingPlan, null, 2)], { type: 'application/json' })); await jsonWriter.close();
+  const overlayHandle = await folder.getFileHandle(`${safe}.overlays.json`, { create: true });
+  const overlayWriter = await overlayHandle.createWritable();
+  await overlayWriter.write(new Blob([JSON.stringify(overlayConfig, null, 2)], { type: 'application/json' })); await overlayWriter.close();
 }

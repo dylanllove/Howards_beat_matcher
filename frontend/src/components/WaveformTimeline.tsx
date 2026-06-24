@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent, PointerEvent } from 'react';
-import type { Cut } from '../types';
+import type { Cut, OverlayLayer } from '../types';
 import { clamp, formatTime } from '../utils/time';
 
-type Props = { peaks: number[]; duration: number; cuts: Cut[]; selectedCutId: string | null; currentTime: number; isPlaying: boolean; zoom: number; onZoom: (z: number) => void; onSeek: (time: number) => void; onAddCut: (time: number) => void; onMoveCut: (id: string, time: number) => void; onSelectCut: (id: string | null) => void; onRemoveCut: (id: string | null) => void };
+type Props = { peaks: number[]; duration: number; cuts: Cut[]; selectedCutId: string | null; currentTime: number; isPlaying: boolean; zoom: number; overlays: OverlayLayer[]; selectedOverlayId: string | null; onZoom: (z: number) => void; onSeek: (time: number) => void; onAddCut: (time: number) => void; onMoveCut: (id: string, time: number) => void; onSelectCut: (id: string | null) => void; onRemoveCut: (id: string | null) => void; onSelectOverlay: (id: string | null) => void; onUpdateOverlay: (id: string, update: Partial<OverlayLayer> | ((overlay: OverlayLayer) => OverlayLayer)) => void };
 
 type Viewport = { scrollLeft: number; width: number };
 
 const TIMELINE_HEIGHT = 190;
 const RULER_HEIGHT = 48;
+const OVERLAY_LANE_HEIGHT = 54;
 const MIN_TIMELINE_WIDTH = 900;
 const PIXELS_PER_SECOND = 80;
 
@@ -17,8 +18,10 @@ const markerClass = (cut: Cut, selected: boolean) => selected ? 'bg-howards shad
 export default function WaveformTimeline(p: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const contextRef = useRef<HTMLDivElement>(null);
   const [dragCut, setDragCut] = useState<string | null>(null);
+  const [dragOverlay, setDragOverlay] = useState<{ id: string; mode: 'move' | 'start' | 'end'; offset: number } | null>(null);
   const [context, setContext] = useState<{ x: number; y: number; time: number } | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ scrollLeft: 0, width: MIN_TIMELINE_WIDTH });
   const width = Math.max(MIN_TIMELINE_WIDTH, p.duration * PIXELS_PER_SECOND * p.zoom);
@@ -168,6 +171,29 @@ export default function WaveformTimeline(p: Props) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     return xToTime(event.clientX - rect.left);
   };
+  const clientTime = (clientX: number) => {
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    return xToTime(clientX - rect.left);
+  };
+  const moveOverlay = (event: PointerEvent) => {
+    if (!dragOverlay) return;
+    const overlay = p.overlays.find((item) => item.id === dragOverlay.id);
+    if (!overlay) return;
+    const minDuration = 0.1;
+    const time = clientTime(event.clientX);
+    if (dragOverlay.mode === 'move') {
+      const length = Math.max(minDuration, overlay.end_seconds - overlay.start_seconds);
+      const start = clamp(time - dragOverlay.offset, 0, Math.max(0, p.duration - length));
+      p.onUpdateOverlay(overlay.id, { start_seconds: start, end_seconds: start + length });
+      return;
+    }
+    if (dragOverlay.mode === 'start') {
+      p.onUpdateOverlay(overlay.id, { start_seconds: clamp(time, 0, Math.max(0, overlay.end_seconds - minDuration)) });
+      return;
+    }
+    p.onUpdateOverlay(overlay.id, { end_seconds: clamp(time, overlay.start_seconds + minDuration, p.duration) });
+  };
   const nudgeZoom = (nextZoom: number) => {
     closeContext();
     const scroller = scrollRef.current;
@@ -190,16 +216,62 @@ export default function WaveformTimeline(p: Props) {
       <button onClick={() => nudgeZoom(p.zoom / 1.25)} className="rounded bg-premiere-800 px-2">−</button>
       <input type="range" min={1} max={18} step={0.1} value={p.zoom} onChange={(e) => nudgeZoom(Number(e.target.value))} className="accent-howards"/>
       <button onClick={() => nudgeZoom(p.zoom * 1.25)} className="rounded bg-premiere-800 px-2">+</button>
-      <span className="ml-auto text-slate-500">Right-click timeline to add a cut. Drag markers or playhead to edit.</span>
+      <span className="ml-auto text-slate-500">Right-click timeline to add a cut. Drag markers, playhead, or overlay blocks to edit.</span>
     </div>
     <div ref={scrollRef} className="overflow-x-auto bg-[#15181e]" onScroll={() => { updateViewport(); closeContext(); }} onWheel={(e) => { closeContext(); if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return; e.preventDefault(); const scroller = scrollRef.current; if (!scroller) return; const rect = scroller.getBoundingClientRect(); const cursorX = e.clientX - rect.left + scroller.scrollLeft; const ratio = cursorX / width; const next = clamp(p.zoom * (e.deltaY < 0 ? 1.12 : 0.88), 1, 18); p.onZoom(next); requestAnimationFrame(() => { scroller.scrollLeft = ratio * Math.max(MIN_TIMELINE_WIDTH, p.duration * PIXELS_PER_SECOND * next) - (e.clientX - rect.left); updateViewport(); }); }}>
-      <div className="relative h-64" style={{ width }} onContextMenu={(e) => { e.preventDefault(); setContext({ x: e.clientX, y: e.clientY, time: pointerTime(e) }); }} onPointerDown={(e) => { if ((e.target as HTMLElement).dataset.marker) return; p.onSeek(pointerTime(e)); p.onSelectCut(null); }} onPointerMove={(e) => { if (dragCut) p.onMoveCut(dragCut, pointerTime(e)); if (e.buttons === 1 && !dragCut && !(e.target as HTMLElement).dataset.marker) p.onSeek(pointerTime(e)); }} onPointerUp={() => setDragCut(null)}>
+      <div ref={timelineRef} className="relative" style={{ width, height: RULER_HEIGHT + OVERLAY_LANE_HEIGHT + TIMELINE_HEIGHT }} onContextMenu={(e) => { e.preventDefault(); setContext({ x: e.clientX, y: e.clientY, time: pointerTime(e) }); }} onPointerDown={(e) => { const target = e.target as HTMLElement; if (target.dataset.marker || target.dataset.overlay) return; p.onSeek(pointerTime(e)); p.onSelectCut(null); p.onSelectOverlay(null); }} onPointerMove={(e) => { if (dragOverlay) moveOverlay(e); if (dragCut) p.onMoveCut(dragCut, pointerTime(e)); const target = e.target as HTMLElement; if (e.buttons === 1 && !dragCut && !dragOverlay && !target.dataset.marker && !target.dataset.overlay) p.onSeek(pointerTime(e)); }} onPointerUp={() => { setDragCut(null); setDragOverlay(null); }}>
         <div className="relative border-b border-premiere-700 bg-[#111318]" style={{ height: RULER_HEIGHT }}>
           {Array.from({ length: Math.ceil(p.duration / rulerStep) + 1 }).map((_, i) => { const t = i * rulerStep; return <span key={t} className="absolute top-2 -translate-x-1/2 font-mono text-xs text-slate-500" style={{ left: timeToX(t) }}>{formatTime(t).slice(0,5)}</span>; })}
         </div>
-        <canvas ref={canvasRef} className="pointer-events-none absolute" style={{ top: RULER_HEIGHT, left: viewport.scrollLeft }}/>
-        <div className="absolute h-[190px] w-0.5 -translate-x-1/2 bg-red-300 shadow-[0_0_10px_rgba(252,165,165,.9)]" style={{ top: RULER_HEIGHT, left: timeToX(p.currentTime) }} />
-        {p.cuts.map((cut) => <button key={cut.id} data-marker="true" title={formatTime(cut.time)} onPointerDown={(e) => { e.stopPropagation(); closeContext(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setDragCut(cut.id); p.onSelectCut(cut.id); }} onDoubleClick={() => p.onRemoveCut(cut.id)} className={`absolute h-[190px] w-1.5 -translate-x-1/2 rounded-full opacity-95 outline-none transition hover:w-2 focus:w-2 ${markerClass(cut, cut.id === p.selectedCutId)}`} style={{ top: RULER_HEIGHT, left: timeToX(cut.time) }} />)}
+        <div className="absolute left-0 border-b border-premiere-700 bg-premiere-950/80" style={{ top: RULER_HEIGHT, width, height: OVERLAY_LANE_HEIGHT }}>
+          <span className="sticky left-3 top-2 z-10 text-xs uppercase tracking-[0.2em] text-slate-500">Overlays</span>
+          {p.overlays.map((overlay, index) => {
+            const left = timeToX(overlay.start_seconds);
+            const right = timeToX(overlay.end_seconds);
+            const blockWidth = Math.max(18, right - left);
+            const selected = overlay.id === p.selectedOverlayId;
+            return <div
+              key={overlay.id}
+              data-overlay="true"
+              className={`absolute top-6 h-5 rounded border text-[11px] leading-5 shadow outline-none ${selected ? 'border-howards bg-howards/35 text-white' : 'border-emerald-300/30 bg-emerald-900/40 text-emerald-100'}`}
+              style={{ left, width: blockWidth, top: 24 + (index % 2) * 2 }}
+              title={`${overlay.name} ${formatTime(overlay.start_seconds)}-${formatTime(overlay.end_seconds)}`}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                p.onSelectOverlay(overlay.id);
+                setDragOverlay({ id: overlay.id, mode: 'move', offset: clientTime(event.clientX) - overlay.start_seconds });
+              }}
+            >
+              <button
+                data-overlay="true"
+                type="button"
+                className="absolute left-0 top-0 h-full w-2 cursor-ew-resize rounded-l bg-white/20"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  p.onSelectOverlay(overlay.id);
+                  setDragOverlay({ id: overlay.id, mode: 'start', offset: 0 });
+                }}
+              />
+              <span data-overlay="true" className="block truncate px-3">{overlay.name}</span>
+              <button
+                data-overlay="true"
+                type="button"
+                className="absolute right-0 top-0 h-full w-2 cursor-ew-resize rounded-r bg-white/20"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  p.onSelectOverlay(overlay.id);
+                  setDragOverlay({ id: overlay.id, mode: 'end', offset: 0 });
+                }}
+              />
+            </div>;
+          })}
+        </div>
+        <canvas ref={canvasRef} className="pointer-events-none absolute" style={{ top: RULER_HEIGHT + OVERLAY_LANE_HEIGHT, left: viewport.scrollLeft }}/>
+        <div className="absolute h-[190px] w-0.5 -translate-x-1/2 bg-red-300 shadow-[0_0_10px_rgba(252,165,165,.9)]" style={{ top: RULER_HEIGHT + OVERLAY_LANE_HEIGHT, left: timeToX(p.currentTime) }} />
+        {p.cuts.map((cut) => <button key={cut.id} data-marker="true" title={formatTime(cut.time)} onPointerDown={(e) => { e.stopPropagation(); closeContext(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); setDragCut(cut.id); p.onSelectCut(cut.id); p.onSelectOverlay(null); }} onDoubleClick={() => p.onRemoveCut(cut.id)} className={`absolute h-[190px] w-1.5 -translate-x-1/2 rounded-full opacity-95 outline-none transition hover:w-2 focus:w-2 ${markerClass(cut, cut.id === p.selectedCutId)}`} style={{ top: RULER_HEIGHT + OVERLAY_LANE_HEIGHT, left: timeToX(cut.time) }} />)}
       </div>
     </div>
     {context && <div ref={contextRef} className="fixed z-50 rounded border border-premiere-600 bg-premiere-900 p-1 shadow-xl" style={{ left: context.x, top: context.y }}>
